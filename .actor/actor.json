@@ -1,0 +1,29 @@
+{
+  "actorSpecification": 1,
+  "name": "douyin-search",
+  "title": "Douyin Search",
+  "description": "Scrape Douyin (mainland China TikTok) video search results by keyword. Extract engagement stats, author info, hashtags, upload date, thumbnails, and playable preview URLs.",
+  "version": "0.1",
+  "buildTag": "latest",
+  "categories": ["SOCIAL_MEDIA", "VIDEOS"],
+  "seoTitle": "Douyin Search Scraper — 抖音 Keyword Search API",
+  "seoDescription": "Scrape Douyin (抖音, mainland China) video search results by keyword. Extract likes, comments, shares, hashtags, author, upload date, thumbnails and playable preview URLs. JSON output ready for BigQuery, Sheets, Zapier, Make, n8n. Companion to our TikTok Search actor.",
+  "minMemoryMbytes": 1024,
+  "maxMemoryMbytes": 4096,
+  "defaultRunOptions": {
+    "timeoutSecs": 600,
+    "memoryMbytes": 2048
+  },
+  "environmentVariables": {
+    "ACTOR_SESSION_WAIT_FOR_LOAD": "domcontentloaded",
+    "ACTOR_BROWSER_TIMEOUT_MS": "90000",
+    "ACTOR_SESSION_RETRIES": "2",
+    "ACTOR_SESSION_RETRY_DELAY_SEC": "3",
+    "ACTOR_SLEEP_AFTER": "1",
+    "ACTOR_REQUEST_RETRIES": "3",
+    "ACTOR_SUPPLEMENT_LATEST": "true",
+    "ACTOR_RUN_TIMEOUT_SEC": "600",
+    "ACTOR_PUSH_CHUNK_SIZE": "50"
+  },
+  "dockerfile": "../Dockerfile"
+}

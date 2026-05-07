@@ -1,0 +1,8 @@
+Douyin Search Scraper
+Copyright 2026 SynergyNano
+
+This product includes software developed by Johnserf-Seed
+(https://github.com/Johnserf-Seed/f2), licensed under the Apache License 2.0.
+Specifically: src/abogus.py is vendored from f2/utils/abogus.py
+@ commit cca83bebcc4a798f92e44182abb0894586306022 (2025-03-05). See
+LICENSES/f2-Apache-2.0.txt for the full license text.

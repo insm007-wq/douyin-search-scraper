@@ -1,0 +1,149 @@
+{
+  "title": "Douyin Search",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "keywords": {
+      "title": "Keywords",
+      "type": "array",
+      "description": "Search keywords (Chinese, Korean, English all supported). Each keyword runs a separate search.",
+      "editor": "stringList",
+      "prefill": ["美食"],
+      "minItems": 0,
+      "sectionCaption": "Search",
+      "sectionDescription": "Enter keywords and configure search filters. Douyin search is most accurate with Chinese keywords."
+    },
+    "keyword": {
+      "title": "Single keyword (fallback)",
+      "type": "string",
+      "description": "Used only when 'keywords' list is empty.",
+      "editor": "textfield"
+    },
+    "maxItems": {
+      "title": "Max results",
+      "type": "integer",
+      "description": "Maximum number of videos to return per keyword. Start with 50 for exploration.",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 1000,
+      "unit": "videos"
+    },
+    "searchSource": {
+      "title": "Search type",
+      "type": "string",
+      "description": "general = combined search (recommended), video = video-only, user = creators only.",
+      "enum": ["general", "video", "user"],
+      "default": "general"
+    },
+    "dateRange": {
+      "title": "Upload date",
+      "type": "string",
+      "description": "Filter by upload date.",
+      "enum": [
+        "all",
+        "today",
+        "yesterday",
+        "7days",
+        "1month",
+        "3months",
+        "6months"
+      ],
+      "default": "all"
+    },
+    "sortType": {
+      "title": "Sort by",
+      "type": "string",
+      "description": "RELEVANCE = best match, MOST_LIKED = most likes, LATEST = newest first.",
+      "enum": ["RELEVANCE", "MOST_LIKED", "LATEST"],
+      "default": "RELEVANCE"
+    },
+    "region": {
+      "title": "Region",
+      "type": "string",
+      "description": "Region hint. Douyin is mainland-China-only — most users keep CN.",
+      "enum": ["CN", "HK", "TW"],
+      "default": "CN"
+    },
+    "minPlayCount": {
+      "title": "Min views",
+      "type": "integer",
+      "description": "Exclude videos with fewer views than this. NOTE: Douyin hides public play counts (returns 0/null in most cases) — this filter has limited effect.",
+      "default": 0,
+      "minimum": 0,
+      "unit": "views"
+    },
+    "strictKeywordMatch": {
+      "title": "Strict keyword match",
+      "type": "boolean",
+      "description": "Filter out videos where the keyword does not appear in title, description, hashtags, or author name. OFF by default — all results are returned with keywordRelevance field.",
+      "default": false
+    },
+    "proxyConfiguration": {
+      "title": "Proxy",
+      "type": "object",
+      "description": "Apify Proxy configuration. Douyin works best with mainland-China residential IPs — Apify RESIDENTIAL has limited CN coverage. Consider 'Custom proxy URLs' with a CN provider for production use.",
+      "editor": "proxy",
+      "sectionCaption": "Advanced",
+      "sectionDescription": "These settings work well with defaults. Change only if needed.",
+      "prefill": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      },
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    },
+    "mirrorVideos": {
+      "title": "Stable video previews",
+      "type": "boolean",
+      "description": "Provide a stable preview URL that stays playable in Console after Douyin's original URL expires.",
+      "default": true
+    },
+    "mirrorVideoBytes": {
+      "title": "Preview clip size (bytes)",
+      "type": "integer",
+      "description": "Bytes per preview clip. Default 262144 = 256 KB.",
+      "default": 262144,
+      "minimum": 65536,
+      "maximum": 10485760,
+      "unit": "bytes"
+    },
+    "minDurationSec": {
+      "title": "Min video duration",
+      "type": "number",
+      "description": "Exclude videos shorter than this many seconds. 0 = no filter.",
+      "default": 0,
+      "minimum": 0,
+      "unit": "seconds"
+    },
+    "maxConcurrentKeywords": {
+      "title": "Parallel keywords",
+      "type": "integer",
+      "description": "Number of keywords to search in parallel. Higher = faster but memory scales linearly. Recommended: 1-4 at 2 GB memory.",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 16
+    },
+    "useProxy": {
+      "title": "Use residential proxy",
+      "type": "boolean",
+      "description": "Use Apify RESIDENTIAL proxy. Disable only when running with custom CN proxy URLs.",
+      "default": true
+    },
+    "includeSearchKeywords": {
+      "title": "Include search keyword in results",
+      "type": "boolean",
+      "description": "Add searchKeyword field to each result item.",
+      "default": false
+    },
+    "msToken": {
+      "title": "msToken (optional)",
+      "type": "string",
+      "description": "Douyin auth token. Leave empty — the Actor handles this automatically.",
+      "editor": "textfield",
+      "isSecret": true
+    }
+  },
+  "required": []
+}

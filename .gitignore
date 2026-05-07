@@ -1,0 +1,25 @@
+.cp-images/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Apify local storage
+storage/
+apify_storage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

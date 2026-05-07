@@ -1,0 +1,5 @@
+apify==3.3.2
+curl-cffi==0.7.4
+fake-useragent==1.5.1
+brotli==1.1.0
+gmssl==3.2.2
