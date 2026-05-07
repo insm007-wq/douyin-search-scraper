@@ -145,12 +145,26 @@ async def _run() -> None:
                 sort_type=sort_type,
             )
 
-        items = data.get("data") or []
+        items_raw = data.get("data")
+        # Phase 4.6 Railway 응답이 dict 일 가능성 (search_nil_info only 케이스 등) 대비
+        if isinstance(items_raw, list):
+            items = items_raw
+        elif isinstance(items_raw, dict):
+            Actor.log.warning(
+                f"[main] data 가 dict — keys={sorted(items_raw.keys())[:10]}. list 로 변환 시도"
+            )
+            # dict 인 경우: 값들 중 dict 인 것만 — 추측: numeric key dict?
+            items = [v for v in items_raw.values() if isinstance(v, dict)]
+        else:
+            items = []
         Actor.log.info(f"[main] returned items={len(items)} status_code={data.get('status_code')}")
 
-        # Phase 1 검증: 처음 3건의 핵심 필드만 로그에 dump → API 동작 여부 확인
-        for i, raw in enumerate(items[:3]):
-            aweme = raw.get("aweme_info") if isinstance(raw, dict) and isinstance(raw.get("aweme_info"), dict) else raw
+        # 처음 3건의 핵심 필드만 로그에 dump → API 동작 여부 확인
+        for i in range(min(3, len(items))):
+            raw = items[i]
+            if not isinstance(raw, dict):
+                continue
+            aweme = raw.get("aweme_info") if isinstance(raw.get("aweme_info"), dict) else raw
             if not isinstance(aweme, dict):
                 continue
             aid = aweme.get("aweme_id") or aweme.get("id") or "?"
@@ -168,6 +182,7 @@ async def _run() -> None:
             # 진단: status_code 가 0 이 아니거나 응답 keys 가 비정상이면 dump
             Actor.log.warning(
                 f"[main] no items. response_keys={sorted(list(data.keys()))[:20]} "
+                f"data_type={type(items_raw).__name__} "
                 f"snippet={json.dumps(data, ensure_ascii=False)[:400]}"
             )
 
