@@ -27,6 +27,7 @@ from session import (
     req_kw as _req_kw,
     ensure_ttwid as _ensure_ttwid,
 )
+from search_remote import fetch_remote_search, is_remote_search_enabled
 from constants import SEARCH_API_URL, VERBOSE_DIAG, _FIXED_UA, _TT_TRACE_HEADER_KEYS
 
 
@@ -101,14 +102,33 @@ async def fetch_douyin_search(
     region: str = "CN",
     impersonate: str | None = None,
 ):
-    """Douyin general search 1회 호출 → JSON 파싱.
+    """Douyin general search → JSON 반환.
 
-    Phase 1.7 변경:
-    - 파라미터 set 을 MediaCrawler/Evil0ctal 최신 코드와 정렬
-    - browser_version=130, version_code=190600, from_group_id 비공백
-    - webid 와 device_id 분리
-    - Cookie 헤더 직접 설정하지 않고 curl_cffi jar 에 의존
+    Phase 4.5: DOUYIN_USE_REMOTE_SEARCH=1 시 Railway Puppeteer 컨텍스트에서 검색 실행
+    (byted_acrawler 우회). 미설정 시 액터 직접 호출 (Apify IP — verify_check 가능성).
     """
+    # ── Phase 4.5: Railway 검색 프록시 우선 경로 ──────────────────────
+    if is_remote_search_enabled():
+        try:
+            offset_int = int(cursor) if str(cursor).strip().lstrip("-").isdigit() else 0
+        except Exception:
+            offset_int = 0
+        remote = await fetch_remote_search(
+            client, actor,
+            keyword=keyword,
+            offset=offset_int,
+            sort_type=sort_type,
+            publish_time=publish_time,
+            search_id=search_id or "",
+        )
+        if remote.ok:
+            return remote.data
+        actor.log.warning(
+            f"[fetch] remote search 실패 — fallback to local HTTP "
+            f"(reason={remote.error!r})"
+        )
+        # remote 실패 → 아래 local 호출로 fallback (대부분 verify_check 받겠지만 단서 수집용)
+
     ua = _FIXED_UA
 
     if not getattr(client, "_dy_device_id", None):

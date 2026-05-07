@@ -26,6 +26,13 @@ DOUYIN_SESSION_URL = (
     os.environ.get("DOUYIN_SESSION_URL") or _DEFAULT_DOUYIN_SESSION_URL
 ).strip()
 
+# Railway /douyin-search endpoint URL (Phase 4.5 — Puppeteer 컨텍스트에서 검색 직접 호출).
+# byted_acrawler 가 Apify IP 를 거부하므로 검색 호출 자체를 Railway 에서 실행해야 통과.
+_DEFAULT_DOUYIN_SEARCH_URL = f"{RAILWAY_BASE_ORIGIN}/douyin-search"
+DOUYIN_SEARCH_URL = (
+    os.environ.get("DOUYIN_SEARCH_URL") or _DEFAULT_DOUYIN_SEARCH_URL
+).strip()
+
 # 프리뷰용 릴레이 베이스(끝이 `?url=`). `DOUYIN_PREVIEW_PROXY_BASE`로 덮어쓰기.
 _DEFAULT_DOUYIN_PREVIEW_PROXY_BASE = f"{RAILWAY_BASE_ORIGIN}/?url="
 PROXY_BASE = (
