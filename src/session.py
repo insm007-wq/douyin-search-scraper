@@ -1,38 +1,41 @@
-"""Douyin 세션/쿠키 획득 레이어 — Phase 1 슬림 버전.
+"""Douyin 세션/쿠키 획득 — Phase 1.6 ttwid bootstrap 버전.
 
-Phase 1 책임:
-- curl_cffi AsyncSession 위에 프록시/impersonate kwargs 합치기
-- 2-step warmup (`/` → `/search/<kw>`) 으로 ttwid·s_v_web_id·odin_tt 쿠키 획득
-- 클라이언트가 보낼 s_v_web_id 가 누락되면 자동 생성·주입
+핵심 발견 (Evil0ctal/riboly Apache-2.0 패턴):
+  - douyin.com HTML 페이지를 GET 하면 안 됨 (__ac_nonce → captcha trap 발동)
+  - 대신 `https://ttwid.bytedance.com/ttwid/union/register/` POST 1회로 ttwid 직접 발급
+  - msToken / s_v_web_id 는 로컬 랜덤 생성으로도 검색 API 통과 (서버 검증 약함)
 
-Phase 3 에서 풀 버전(KV 캐싱·remote msToken·재시도 로테이션)으로 확장.
+이로써 우리는 douyin.com HTML 페이지에 절대 접근하지 않고 JSON API 만 직타격 가능.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import random
+import string
 import time
-import urllib.parse
 from typing import Any
 
 from apify import Actor
-from generators import generate_s_v_web_id
+
+from generators import generate_random_ms_token, generate_s_v_web_id
 
 
 CURL_IMPERSONATE = "chrome120"
-# curl-cffi 0.7.4 가 지원하는 프로파일만 사용 — chrome131 은 lib 미지원으로 ImpersonateError 발생.
 SEARCH_IMPERSONATE_FALLBACKS = ("chrome120", "chrome124")
-_SESSION_INIT_IMPERSONATE_ORDER = ("chrome124", "chrome120", "safari17_0")
+_BOOTSTRAP_IMPERSONATE_ORDER = ("chrome124", "chrome120", "safari17_0")
 
-# Phase 1 검증 규칙: ttwid 만 필수. msToken/odin_tt 는 Phase 3 에서 강화.
-# Douyin 의 ttwid 는 첫 페이지 로드만으로 set-cookie 됨.
-_SESSION_INIT_REQUIRED = {
-    "ttwid": {"min_len": 10, "max_len": None},
-}
-_SESSION_INIT_OPTIONAL = {
-    "s_v_web_id": {"min_len": 10, "max_len": None},
-    "odin_tt": {"min_len": 10, "max_len": None},
-    "msToken": {"min_len": 80, "max_len": None},
+# Evil0ctal 패턴 (Apache-2.0): aid=1768=ixigua, service=www.ixigua.com 의 union flow 로
+# `.douyin.com` 에서 사용 가능한 ttwid 를 발급. JS 실행도, douyin.com 방문도 불필요.
+_TTWID_REGISTER_URL = "https://ttwid.bytedance.com/ttwid/union/register/"
+_TTWID_REGISTER_PAYLOAD = {
+    "region": "cn",
+    "aid": 1768,
+    "needFid": False,
+    "service": "www.ixigua.com",
+    "migrate_info": {"ticket": "", "source": "node"},
+    "cbUrlProtocol": "https",
+    "union": True,
 }
 
 
@@ -76,140 +79,153 @@ def impersonate_try_order(client: Any, keyword: str) -> tuple[str, ...]:
     return SEARCH_IMPERSONATE_FALLBACKS
 
 
+def _set_douyin_cookie(client: Any, name: str, value: str) -> None:
+    """curl_cffi 쿠키 jar 에 .douyin.com 도메인 쿠키 설정. 실패는 조용히 무시."""
+    if not value:
+        return
+    try:
+        client.cookies.set(name, value, domain=".douyin.com")
+    except Exception:
+        # curl_cffi 일부 버전은 domain kwarg 미지원 → fallback
+        try:
+            client.cookies.set(name, value)
+        except Exception:
+            pass
+
+
+async def _fetch_ttwid(client: Any, ua: str, actor: Actor, impersonate: str) -> str:
+    """ttwid.bytedance.com 에 POST 한 번 → ttwid 쿠키 추출 후 반환.
+
+    Evil0ctal 코드는 헤더 미설정으로 호출 (httpx defaults). curl_cffi 도 동일하게
+    `content=` 직렬화 + Content-Type 미지정으로 호출 가능. UA 와 Referer 만 줘서
+    봇 의심 줄임.
+    """
+    headers = {
+        "User-Agent": ua,
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        # 인증 endpoint 호출 — Origin 은 ixigua 로 (service=www.ixigua.com 와 일치)
+        "Origin": "https://www.ixigua.com",
+        "Referer": "https://www.ixigua.com/",
+    }
+    # 기존 jar 의 ttwid 가 잔여하면 응답 쿠키와 섞일 수 있어 호출 직전 비움.
+    try:
+        client.cookies.delete("ttwid")
+    except Exception:
+        pass
+
+    body = json.dumps(_TTWID_REGISTER_PAYLOAD, separators=(",", ":")).encode("utf-8")
+    t0 = time.monotonic()
+    r = await client.post(
+        _TTWID_REGISTER_URL,
+        data=body,
+        headers=headers,
+        **req_kw(client, timeout=15.0, impersonate=impersonate),
+    )
+    elapsed = time.monotonic() - t0
+
+    set_cookie_hdr = r.headers.get("set-cookie", "") or ""
+    sc_names = sorted({
+        p.split("=", 1)[0].strip().lower()
+        for p in set_cookie_hdr.split(",")
+        if "=" in p and len(p.split("=", 1)[0].strip()) < 40
+    })
+
+    # curl_cffi 의 cookies 는 jar — get_dict 또는 직접 조회
+    ttwid = ""
+    try:
+        ttwid = (client.cookies.get("ttwid", domain=".bytedance.com") or "").strip()
+    except Exception:
+        pass
+    if not ttwid:
+        ck = cookie_dict(client)
+        ttwid = (ck.get("ttwid") or "").strip()
+
+    actor.log.info(
+        f"[BOOTSTRAP:ttwid] status={r.status_code} bytes={len(r.content or b'')} "
+        f"elapsed={elapsed:.2f}s set_cookie_names={sc_names} ttwid_len={len(ttwid)}"
+    )
+    return ttwid
+
+
 async def ensure_ttwid(
     client: Any,
     ua: str,
     actor: Actor,
     impersonate: str | None = None,
-    keyword: str | None = None,
+    keyword: str | None = None,  # 호환용 (Phase 1.6 에서는 사용하지 않음)
 ) -> dict:
-    """2-step warmup. Phase 1 은 단순 직렬 흐름 — 락·dedup 없이 호출자가 직렬화.
+    """ttwid bootstrap + 로컬 쿠키 생성. douyin.com HTML 절대 호출 안 함.
 
     Returns:
         {cookies, msToken, ttwid, s_v_web_id, impersonate, attempt}
     """
-    def _check() -> tuple[dict, list[str]]:
-        ck = cookie_dict(client)
-        missing: list[str] = []
-        for name, rule in _SESSION_INIT_REQUIRED.items():
-            val = (ck.get(name) or "").strip()
-            if not val:
-                missing.append(name)
-                continue
-            n = len(val)
-            if n < rule["min_len"]:
-                missing.append(name)
-        return ck, missing
-
-    existing, missing_now = _check()
-    if not missing_now:
-        actor.log.info("[SESSION] warmup_skipped=true (ttwid 이미 보유)")
+    existing = cookie_dict(client)
+    existing_ttwid = (existing.get("ttwid") or "").strip()
+    if len(existing_ttwid) >= 10:
+        actor.log.info(f"[SESSION] bootstrap_skipped=true (ttwid_len={len(existing_ttwid)})")
         return {
             "cookies": existing,
             "msToken": (existing.get("msToken") or "").strip(),
-            "ttwid": existing.get("ttwid", ""),
-            "s_v_web_id": existing.get("s_v_web_id", ""),
+            "ttwid": existing_ttwid,
+            "s_v_web_id": (existing.get("s_v_web_id") or "").strip(),
             "impersonate": impersonate or "",
             "attempt": 0,
         }
 
-    base_headers = {
-        "User-Agent": ua,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-    }
-    search_kw = (keyword or "热门").strip() or "热门"
-    search_url = f"https://www.douyin.com/search/{urllib.parse.quote(search_kw)}"
-    steps = (
-        ("https://www.douyin.com/", (0.05, 0.15)),
-        (search_url, (0.0, 0.0)),
-    )
-
     started_at = time.monotonic()
     last_error: Exception | None = None
+
     for attempt in range(1, 4):
-        imp = _SESSION_INIT_IMPERSONATE_ORDER[
-            min(attempt - 1, len(_SESSION_INIT_IMPERSONATE_ORDER) - 1)
+        imp = _BOOTSTRAP_IMPERSONATE_ORDER[
+            min(attempt - 1, len(_BOOTSTRAP_IMPERSONATE_ORDER) - 1)
         ]
-        actor.log.info(f"[SESSION] warmup attempt={attempt}/3 impersonate={imp}")
+        actor.log.info(f"[SESSION] bootstrap attempt={attempt}/3 impersonate={imp}")
         try:
-            for step_idx, (url, (lo, hi)) in enumerate(steps, 1):
-                t0 = time.monotonic()
-                r = await client.get(
-                    url,
-                    headers=base_headers,
-                    **req_kw(client, timeout=20.0, impersonate=imp),
-                )
-                elapsed = time.monotonic() - t0
-                ck_now = cookie_dict(client)
-                # 봇 차단 페이지 감지 — Douyin 의 차단 페이지는 보통 6-8KB HTML, ttwid 미발급
-                # + content-length 작음 + 'verify' 또는 'captcha' 또는 'security' 키워드 포함.
-                body_bytes = r.content or b""
-                bot_signal = ""
-                if len(body_bytes) < 15_000 and not (ck_now.get("ttwid") or "").strip():
-                    txt_low = body_bytes[:4096].decode("utf-8", errors="ignore").lower()
-                    for sig in ("verify", "captcha", "security", "blocked", "robot"):
-                        if sig in txt_low:
-                            bot_signal = f" bot_page_signal={sig!r}"
-                            break
-                    if not bot_signal:
-                        bot_signal = " bot_page_suspect=small_body_no_ttwid"
-                set_cookie_hdr = r.headers.get("set-cookie", "") or ""
-                sc_names = sorted({
-                    p.split("=", 1)[0].strip().lower()
-                    for p in set_cookie_hdr.split(",")
-                    if "=" in p and len(p.split("=", 1)[0].strip()) < 40
-                })
-                actor.log.info(
-                    f"[SESSION:step{step_idx}] url={url.split('?')[0]} "
-                    f"status={r.status_code} bytes={len(body_bytes)} "
-                    f"elapsed={elapsed:.2f}s set_cookie_names={sc_names}{bot_signal} "
-                    f"jar: ttwid={len((ck_now.get('ttwid') or '').strip())} "
-                    f"s_v_web_id={len((ck_now.get('s_v_web_id') or '').strip())} "
-                    f"odin_tt={len((ck_now.get('odin_tt') or '').strip())} "
-                    f"msToken={len((ck_now.get('msToken') or '').strip())}"
-                )
-                await asyncio.sleep(random.uniform(lo, hi))
-            last_error = None
+            ttwid = await _fetch_ttwid(client, ua, actor, imp)
         except Exception as e:
             last_error = e
-            actor.log.warning(f"[SESSION] warmup 실패 attempt={attempt} imp={imp}: {type(e).__name__}: {e}")
+            ttwid = ""
+            actor.log.warning(
+                f"[SESSION] ttwid POST 실패 attempt={attempt} imp={imp}: "
+                f"{type(e).__name__}: {e}"
+            )
 
-        cookies, missing = _check()
-        if not missing:
-            # s_v_web_id 누락 시 클라이언트 측에서 생성·주입 (Douyin 도 echo back 함)
-            if not cookies.get("s_v_web_id"):
-                gen = generate_s_v_web_id()
-                try:
-                    client.cookies.set("s_v_web_id", gen, domain=".douyin.com")
-                    cookies["s_v_web_id"] = gen
-                    actor.log.info(f"[SESSION] s_v_web_id 자동 생성 len={len(gen)}")
-                except Exception:
-                    pass
+        if ttwid and len(ttwid) >= 10:
+            # 도메인 .douyin.com 으로 재바인딩 (검색 호출 시 Cookie 헤더에 포함되도록)
+            _set_douyin_cookie(client, "ttwid", ttwid)
+            # 로컬 생성 쿠키 — Douyin 서버 검증 약함, 랜덤이면 충분 (Evil0ctal/F2 검증)
+            ms_token = generate_random_ms_token(length=107)
+            s_v_web_id = generate_s_v_web_id()
+            _set_douyin_cookie(client, "msToken", ms_token)
+            _set_douyin_cookie(client, "s_v_web_id", s_v_web_id)
+            # passport_csrf_token: csrf 검증용. POST 가 아닌 GET 검색에는 불필요.
+            # csrf 토큰을 쿠키 jar 에 추가하면 일부 endpoint 가 X-CSRFToken 검증을 요구할 수 있어 미설정.
+
             elapsed_ms = int((time.monotonic() - started_at) * 1000)
             actor.log.info(
-                f"[SESSION] source=warmup elapsed_ms={elapsed_ms} attempt={attempt} imp={imp}"
+                f"[SESSION] source=bootstrap elapsed_ms={elapsed_ms} attempt={attempt} "
+                f"imp={imp} ttwid_len={len(ttwid)} ms_len={len(ms_token)} "
+                f"svw_len={len(s_v_web_id)}"
             )
             return {
-                "cookies": cookies,
-                "msToken": (cookies.get("msToken") or "").strip(),
-                "ttwid": cookies.get("ttwid", ""),
-                "s_v_web_id": cookies.get("s_v_web_id", ""),
+                "cookies": cookie_dict(client),
+                "msToken": ms_token,
+                "ttwid": ttwid,
+                "s_v_web_id": s_v_web_id,
                 "impersonate": imp,
                 "attempt": attempt,
             }
 
         if attempt < 3:
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-            actor.log.warning(f"[SESSION] missing={missing} → 재시도")
+            delay = random.uniform(1.0, 2.0)
+            actor.log.warning(f"[SESSION] ttwid 미발급 — {delay:.1f}s 후 재시도")
+            await asyncio.sleep(delay)
 
     raise RuntimeError(
-        f"Douyin session init failed after 3 attempts (last_error={last_error!r})"
+        f"Douyin ttwid bootstrap failed after 3 attempts (last_error={last_error!r})"
     )
+
+
+# F401 가드 — string 은 Phase 3 csrf 토큰 fallback 에 쓰일 예정 (현재 unused)
+_ = string
