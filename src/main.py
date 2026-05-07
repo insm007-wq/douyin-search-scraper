@@ -16,11 +16,10 @@ from search_http import fetch_douyin_search
 from abogus_signer import preheat_signer
 
 
-# Douyin 은 mainland CN IP 가 가장 통과율 높음. Phase 1.9 — CN 우선 시도.
-# Apify RESIDENTIAL pool 의 CN 비중은 낮지만 일단 CN 시도 → 실패 시 사용자가 country
-# 명시(TW/HK 등) 또는 외부 CN proxy 로 전환.
-# HK 는 byted_acrawler 평판 낮음 (verify_check soft-block 빈발) — 후순위.
-_PROXY_COUNTRY_ORDER = ["TW", "HK", "SG", "JP", "KR", "CN"]
+# Phase 1.11 — automation-lab/douyin-analytics-scraper 가 RESIDENTIAL CN 으로 동작 확인.
+# Apify Residential 은 lower-case 'cn' 으로 country 명시 가능 (docs.apify.com/proxy/residential).
+# CN 우선, 실패 시 HK/TW 순으로 fallback. JP/KR 등 비-Asia 는 byted 평판 매우 낮음.
+_PROXY_COUNTRY_ORDER = ["CN", "HK", "TW"]
 
 
 async def _setup_proxy(actor_input: dict) -> tuple[Any, str | None]:

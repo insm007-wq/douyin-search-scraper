@@ -37,10 +37,12 @@ _SEARCH_API_PATH = "/aweme/v1/web/general/search/single/"
 # MediaCrawler 가 사용하는 from_group_id 하드코딩값 — 빈 값보다 봇 의심 줄임.
 _DEFAULT_FROM_GROUP_ID = "7378810571505847586"
 
-# Phase 1.8: MediaCrawler 가 search 에서 a_bogus 를 부착하지 않는 분기를 두는 것은
-# 관찰적 우회법. 환경변수 DOUYIN_ATTACH_A_BOGUS=1 로 토글 가능 (기본은 미부착).
-# 9 가 계속 발생하면 다른 분기를 시도해보기 위함.
-_ATTACH_A_BOGUS = os.environ.get("DOUYIN_ATTACH_A_BOGUS", "").strip().lower() in ("1", "true", "yes")
+# Phase 1.11: a_bogus 재부착 — late 2024 부터 Douyin 이 a_bogus 검증 강화했다는 보고
+# (조사 보고서). 우리 PoC 에서 a_bogus ON 시 status_code=9 받았으나, 그건 다른 변수
+# (잘못된 paramset)가 원인이었을 가능성. Phase 1.7 paramset 정렬 후 재시도.
+# 환경변수 DOUYIN_ATTACH_A_BOGUS=0 으로 강제 OFF 가능 (비교 검증용).
+_ATTACH_A_BOGUS_ENV = (os.environ.get("DOUYIN_ATTACH_A_BOGUS") or "").strip().lower()
+_ATTACH_A_BOGUS = _ATTACH_A_BOGUS_ENV not in ("0", "false", "no", "off")  # 기본 ON
 
 # bootstrap 직후 검색 호출까지 jitter — "사람이 페이지 로딩 후 검색 입력" 패턴 흉내.
 # 너무 빠르면 봇 의심, 너무 느리면 ttwid stale.
