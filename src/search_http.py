@@ -10,7 +10,9 @@
 #   6. Referer 를 검색 페이지로 명시 (`/search/<kw>?aid=...&type=general`)
 #   7. 쿠키 jar 일원화 — Cookie 헤더 직접 주입 제거
 #   8. a_bogus 입력에 path 도 함께 (urlencode quote_plus 표준)
+import asyncio
 import json
+import os
 import random
 import time
 import urllib.parse
@@ -32,8 +34,16 @@ from constants import SEARCH_API_URL, VERBOSE_DIAG, _FIXED_UA, _TT_TRACE_HEADER_
 _SEARCH_API_PATH = "/aweme/v1/web/general/search/single/"
 
 # MediaCrawler 가 사용하는 from_group_id 하드코딩값 — 빈 값보다 봇 의심 줄임.
-# 다른 19자리 ID 도 가능하지만 실제 트래픽 패턴 흉내용으로 고정값 채택.
 _DEFAULT_FROM_GROUP_ID = "7378810571505847586"
+
+# Phase 1.8: MediaCrawler 가 search 에서 a_bogus 를 부착하지 않는 분기를 두는 것은
+# 관찰적 우회법. 환경변수 DOUYIN_ATTACH_A_BOGUS=1 로 토글 가능 (기본은 미부착).
+# 9 가 계속 발생하면 다른 분기를 시도해보기 위함.
+_ATTACH_A_BOGUS = os.environ.get("DOUYIN_ATTACH_A_BOGUS", "").strip().lower() in ("1", "true", "yes")
+
+# bootstrap 직후 검색 호출까지 jitter — "사람이 페이지 로딩 후 검색 입력" 패턴 흉내.
+# 너무 빠르면 봇 의심, 너무 느리면 ttwid stale.
+_POST_BOOTSTRAP_JITTER_SEC = (0.6, 1.5)
 
 
 def _body_preview(content: bytes, max_chars: int = 400) -> str:
@@ -121,6 +131,10 @@ async def fetch_douyin_search(
     await _ensure_ttwid(client, ua, actor, impersonate=impersonate, keyword=keyword)
     cookies = _cookie_dict(client)
 
+    # Phase 1.8: bootstrap → 검색 사이 jitter. 사람이 페이지 로딩 후 검색 입력하는 시간.
+    jitter = random.uniform(*_POST_BOOTSTRAP_JITTER_SEC)
+    await asyncio.sleep(jitter)
+
     # msToken: 사용자 입력 → jar → fallback random.
     # 우리 session.py 가 jar 에 이미 넣어두지만 사용자 override 우선.
     ms_token = (
@@ -194,13 +208,18 @@ async def fetch_douyin_search(
         params["sort_type"] = str(sort_type)
 
     # urlencode 기본(quote_plus) 사용 — 검색 키워드 중 한자/한글 인코딩 일관성을 위해.
-    # a_bogus 입력문과 실제 URL 을 동일 함수로 만들어 mismatch 차단.
     qs = urllib.parse.urlencode(params)
 
-    # a_bogus 계산 — MediaCrawler 는 search 에서 분기 제외하지만 TikTokDownloader 는 부착.
-    # 우리는 일단 부착 (가장 표준 패턴). 9 가 계속 발생하면 a_bogus 미부착 분기로 토글.
-    a_bogus = get_a_bogus(qs, ua, body="")
-    full_url = f"{SEARCH_API_URL}?{qs}&a_bogus={urllib.parse.quote(a_bogus, safe='')}"
+    # Phase 1.8 토글: a_bogus 부착 여부.
+    # 기본 OFF (MediaCrawler 패턴) — 9 발생 시 ON 으로 비교 검증 가능.
+    a_bogus_dbg = ""
+    if _ATTACH_A_BOGUS:
+        a_bogus = get_a_bogus(qs, ua, body="")
+        full_url = f"{SEARCH_API_URL}?{qs}&a_bogus={urllib.parse.quote(a_bogus, safe='')}"
+        a_bogus_dbg = f"attached(prefix={a_bogus[:10]!r})"
+    else:
+        full_url = f"{SEARCH_API_URL}?{qs}"
+        a_bogus_dbg = "skipped(MediaCrawler pattern)"
 
     # Referer 는 검색 페이지 패턴 — type=general 추가로 검색 트래픽 시그널 강화.
     referer = (
@@ -223,13 +242,9 @@ async def fetch_douyin_search(
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
     }
-    if VERBOSE_DIAG:
-        actor.log.info(
-            f"[diag:run] keyword={keyword!r} cursor={cursor!r} "
-            f"a_bogus_prefix={a_bogus[:10]!r} ms_len={len(ms_token)} verifyFp={verify_fp[:20]}…"
-        )
     actor.log.info(
-        f"[fetch:req] keyword={keyword!r} jar_keys={sorted(cookies.keys())} "
+        f"[fetch:req] keyword={keyword!r} a_bogus={a_bogus_dbg} "
+        f"jitter={jitter:.2f}s jar_keys={sorted(cookies.keys())} "
         f"ttwid_len={len((cookies.get('ttwid') or '').strip())} "
         f"ms_len={len(ms_token)} webid={webid[:6]}… device_id={device_id[:6]}…"
     )
