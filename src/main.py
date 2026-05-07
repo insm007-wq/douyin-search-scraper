@@ -24,13 +24,59 @@ _PROXY_COUNTRY_ORDER = ["TW", "HK", "SG", "JP", "KR", "CN"]
 
 
 async def _setup_proxy(actor_input: dict) -> tuple[Any, str | None]:
-    """proxyConfiguration 입력을 처리해 (proxy_config, first_proxy_url) 반환."""
+    """proxyConfiguration 입력을 처리해 (proxy_config, first_proxy_url) 반환.
+
+    우선순위:
+      1. proxyConfiguration.proxyUrls 명시 (custom 외부 proxy — IPRoyal/SOAX 등)
+      2. proxyConfiguration.useApifyProxy=true → Apify proxy
+      3. useProxy=false → 직접 egress
+    """
     use_proxy = bool(actor_input.get("useProxy", True))
     if not use_proxy:
         Actor.log.info("[proxy] disabled by useProxy=false")
         return None, None
 
     user_proxy_cfg = actor_input.get("proxyConfiguration") or {}
+
+    # 1순위: 사용자 custom proxy URLs (IPRoyal/SOAX/Bright Data 등 외부 CN/HK residential)
+    custom_urls = user_proxy_cfg.get("proxyUrls") or []
+    if isinstance(custom_urls, list) and custom_urls:
+        custom_urls = [str(u).strip() for u in custom_urls if str(u).strip()]
+    else:
+        custom_urls = []
+    if custom_urls:
+        try:
+            proxy_config = await Actor.create_proxy_configuration(proxy_urls=custom_urls)
+        except Exception as e:
+            Actor.log.warning(f"[proxy] custom create_proxy_configuration 실패: {type(e).__name__}: {e}")
+            return None, None
+        if proxy_config is None:
+            Actor.log.warning("[proxy] custom proxy_config is None")
+            return None, None
+        try:
+            proxy_url = await proxy_config.new_url()
+        except Exception as e:
+            Actor.log.warning(f"[proxy] custom new_url 실패: {type(e).__name__}: {e}")
+            return proxy_config, None
+        # URL 의 host 만 노출 (사용자 password 보호)
+        host_dbg = "?"
+        try:
+            from urllib.parse import urlparse
+            host_dbg = urlparse(proxy_url).hostname or "?"
+        except Exception:
+            pass
+        Actor.log.info(
+            f"[proxy] custom proxy_urls n={len(custom_urls)} "
+            f"first_host={host_dbg} url_ok={bool(proxy_url)}"
+        )
+        return proxy_config, proxy_url
+
+    # 2순위: Apify proxy
+    use_apify = user_proxy_cfg.get("useApifyProxy")
+    if use_apify is False:
+        Actor.log.info("[proxy] useApifyProxy=false 그리고 customProxyUrls 미설정 → direct")
+        return None, None
+
     groups = user_proxy_cfg.get("apifyProxyGroups") or ["RESIDENTIAL"]
     user_country = (user_proxy_cfg.get("apifyProxyCountry") or "").strip()
     initial_country = user_country or _PROXY_COUNTRY_ORDER[0]
