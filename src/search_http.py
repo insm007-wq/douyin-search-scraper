@@ -1,6 +1,15 @@
-# src/search_http.py — Phase 1 슬림 버전.
-# `fetch_douyin_search()` 가 a_bogus 서명 + 1회 GET 호출 + JSON 반환만 담당.
-# Phase 3 에서 재시도/auth-retry/mstoken_remote 통합.
+# src/search_http.py — Phase 1.7 (status_code=9 우회).
+# Douyin 봇 분류기를 통과시키기 위해 8가지 변경:
+#   1. version_code 190500 → 190600 (실제 douyin web 빌드와 일치)
+#   2. browser_version 122 → 130 (Evil0ctal/MediaCrawler 최신)
+#   3. from_group_id 빈 값 → 19자리 (브라우저는 절대 빈 값 안 보냄)
+#   4. update_version_code/pc_libra_divert/publish_video_strategy_type/
+#      show_live_replay_strategy/need_time_list/time_list_query/
+#      from_user_page/locate_query/whale_cut_token 추가
+#   5. webid 와 device_id 를 다른 19자리 random 으로 분리
+#   6. Referer 를 검색 페이지로 명시 (`/search/<kw>?aid=...&type=general`)
+#   7. 쿠키 jar 일원화 — Cookie 헤더 직접 주입 제거
+#   8. a_bogus 입력에 path 도 함께 (urlencode quote_plus 표준)
 import json
 import random
 import time
@@ -17,6 +26,14 @@ from session import (
     ensure_ttwid as _ensure_ttwid,
 )
 from constants import SEARCH_API_URL, VERBOSE_DIAG, _FIXED_UA, _TT_TRACE_HEADER_KEYS
+
+
+# Douyin web 의 검색 endpoint path (a_bogus 입력에 사용)
+_SEARCH_API_PATH = "/aweme/v1/web/general/search/single/"
+
+# MediaCrawler 가 사용하는 from_group_id 하드코딩값 — 빈 값보다 봇 의심 줄임.
+# 다른 19자리 ID 도 가능하지만 실제 트래픽 패턴 흉내용으로 고정값 채택.
+_DEFAULT_FROM_GROUP_ID = "7378810571505847586"
 
 
 def _body_preview(content: bytes, max_chars: int = 400) -> str:
@@ -74,17 +91,25 @@ async def fetch_douyin_search(
     region: str = "CN",
     impersonate: str | None = None,
 ):
-    """Douyin general search 1회 호출 → JSON 파싱 결과 반환. Phase 1 — 재시도 없음.
+    """Douyin general search 1회 호출 → JSON 파싱.
 
-    Returns:
-        dict — Douyin 응답 JSON (`{status_code, data, cursor, has_more, ...}`).
-        호출 실패 시 빈 dict.
+    Phase 1.7 변경:
+    - 파라미터 set 을 MediaCrawler/Evil0ctal 최신 코드와 정렬
+    - browser_version=130, version_code=190600, from_group_id 비공백
+    - webid 와 device_id 분리
+    - Cookie 헤더 직접 설정하지 않고 curl_cffi jar 에 의존
     """
-    ua = _FIXED_UA  # a_bogus 서명 입력 UA 와 요청 헤더 UA 가 동일해야 함
+    ua = _FIXED_UA
 
     if not getattr(client, "_dy_device_id", None):
         client._dy_device_id = generate_device_id()
     device_id = client._dy_device_id
+
+    # webid 는 device_id 와 별개 — MediaCrawler 의 get_web_id() 와 동일 패턴.
+    # 같은 세션에서 한 번 생성 후 고정 (페이지네이션마다 변하면 의심 지표).
+    if not getattr(client, "_dy_webid", None):
+        client._dy_webid = generate_device_id()
+    webid = client._dy_webid
 
     if not hasattr(client, "_dy_verify_fp_by_kw"):
         client._dy_verify_fp_by_kw = {}
@@ -92,47 +117,60 @@ async def fetch_douyin_search(
         client._dy_verify_fp_by_kw[keyword] = generate_verify_fp()
     verify_fp = client._dy_verify_fp_by_kw[keyword]
 
-    # warmup 진행 — 쿠키 jar 채우기
+    # ttwid bootstrap — douyin.com HTML 호출 안 함
     await _ensure_ttwid(client, ua, actor, impersonate=impersonate, keyword=keyword)
     cookies = _cookie_dict(client)
 
-    # msToken: 사용자 입력 → jar → fallback random. Phase 3 에서 mstoken_remote 통합.
+    # msToken: 사용자 입력 → jar → fallback random.
+    # 우리 session.py 가 jar 에 이미 넣어두지만 사용자 override 우선.
     ms_token = (
         (ms_token_override or "").strip()
         or (cookies.get("msToken") or "").strip()
         or generate_random_ms_token()
     )
 
-    # Douyin general search params (필수만 — webapp_id 등 변종은 잡힐 때 추가).
-    # 고정 상수 (입력 미노출): is_filter_search/query_correct_type/search_channel/from_group_id.
+    # MediaCrawler / Evil0ctal 최신 코드와 정렬한 검색 파라미터.
+    # 모든 키-값을 string 으로 (urlencode 일관성).
     params = {
+        # 플랫폼·앱 식별자
         "device_platform": "webapp",
         "aid": "6383",
         "channel": "channel_pc_web",
+        "pc_client_type": "1",
+        "pc_libra_divert": "Windows",
+        "version_code": "190600",
+        "version_name": "19.6.0",
+        "update_version_code": "170400",
+        # 검색 파라미터
         "search_channel": "aweme_general",
         "enable_history": "1",
-        "keyword": keyword,
         "search_source": "normal_search",
         "query_correct_type": "1",
         "is_filter_search": "0",
-        "from_group_id": "",
+        "from_group_id": _DEFAULT_FROM_GROUP_ID,
         "offset": str(cursor),
-        "count": "10",
+        "count": "15",
         "need_filter_settings": "1",
-        "list_type": "single",
-        "pc_client_type": "1",
-        "version_code": "190500",
-        "version_name": "19.5.0",
+        "list_type": "multi",
+        "from_user_page": "1",
+        "locate_query": "false",
+        "need_time_list": "1",
+        "time_list_query": "0",
+        "publish_video_strategy_type": "2",
+        "show_live_replay_strategy": "1",
+        "whale_cut_token": "",
+        "keyword": keyword,
+        # 환경 시그너처 — 브라우저 패턴 흉내
         "cookie_enabled": "true",
         "screen_width": "1920",
         "screen_height": "1080",
         "browser_language": "zh-CN",
         "browser_platform": "Win32",
         "browser_name": "Chrome",
-        "browser_version": "122.0.0.0",
+        "browser_version": "130.0.0.0",
         "browser_online": "true",
         "engine_name": "Blink",
-        "engine_version": "122.0.0.0",
+        "engine_version": "130.0.0.0",
         "os_name": "Windows",
         "os_version": "10",
         "cpu_core_num": "8",
@@ -140,12 +178,13 @@ async def fetch_douyin_search(
         "platform": "PC",
         "downlink": "10",
         "effective_type": "4g",
-        "round_trip_time": "50",
+        "round_trip_time": "0",
+        # 식별자
         "verifyFp": verify_fp,
         "fp": verify_fp,
         "msToken": ms_token,
         "device_id": device_id,
-        "webid": (cookies.get("s_v_web_id") or "").strip() or device_id,
+        "webid": webid,
     }
     if search_id:
         params["search_id"] = search_id
@@ -154,23 +193,33 @@ async def fetch_douyin_search(
     if sort_type > 0:
         params["sort_type"] = str(sort_type)
 
-    qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    # urlencode 기본(quote_plus) 사용 — 검색 키워드 중 한자/한글 인코딩 일관성을 위해.
+    # a_bogus 입력문과 실제 URL 을 동일 함수로 만들어 mismatch 차단.
+    qs = urllib.parse.urlencode(params)
+
+    # a_bogus 계산 — MediaCrawler 는 search 에서 분기 제외하지만 TikTokDownloader 는 부착.
+    # 우리는 일단 부착 (가장 표준 패턴). 9 가 계속 발생하면 a_bogus 미부착 분기로 토글.
     a_bogus = get_a_bogus(qs, ua, body="")
     full_url = f"{SEARCH_API_URL}?{qs}&a_bogus={urllib.parse.quote(a_bogus, safe='')}"
 
-    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    # Referer 는 검색 페이지 패턴 — type=general 추가로 검색 트래픽 시그널 강화.
+    referer = (
+        f"https://www.douyin.com/search/{urllib.parse.quote(keyword)}"
+        f"?aid=6383&type=general"
+    )
+    # Cookie 헤더는 명시하지 않음 — curl_cffi jar 가 자동 첨부.
+    # 단일 출처 = ttwid 중복/충돌 위험 제거.
     headers = {
         "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
-        "Cookie": cookie_str,
-        "Referer": f"https://www.douyin.com/search/{urllib.parse.quote(keyword)}",
+        "Referer": referer,
         "Origin": "https://www.douyin.com",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "Sec-Ch-Ua": '"Chromium";v="130", "Not(A:Brand";v="24", "Google Chrome";v="130"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
     }
@@ -179,6 +228,11 @@ async def fetch_douyin_search(
             f"[diag:run] keyword={keyword!r} cursor={cursor!r} "
             f"a_bogus_prefix={a_bogus[:10]!r} ms_len={len(ms_token)} verifyFp={verify_fp[:20]}…"
         )
+    actor.log.info(
+        f"[fetch:req] keyword={keyword!r} jar_keys={sorted(cookies.keys())} "
+        f"ttwid_len={len((cookies.get('ttwid') or '').strip())} "
+        f"ms_len={len(ms_token)} webid={webid[:6]}… device_id={device_id[:6]}…"
+    )
 
     started = time.monotonic()
     try:
@@ -225,5 +279,4 @@ async def fetch_douyin_search(
 
 
 __all__ = ["fetch_douyin_search"]
-# 미사용 import 가드 (random/time 은 Phase 3 추가 시 사용 예정 — F401 회피)
-_ = random, time
+_ = random  # Phase 3 retry 에서 사용 예정
