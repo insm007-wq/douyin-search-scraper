@@ -1,11 +1,15 @@
-"""Douyin 세션/쿠키 획득 — Phase 1.6 ttwid bootstrap 버전.
+"""Douyin 세션/쿠키 획득 — Phase 4 (Railway remote session 우선 + ttwid bootstrap fallback).
 
-핵심 발견 (Evil0ctal/riboly Apache-2.0 패턴):
-  - douyin.com HTML 페이지를 GET 하면 안 됨 (__ac_nonce → captcha trap 발동)
-  - 대신 `https://ttwid.bytedance.com/ttwid/union/register/` POST 1회로 ttwid 직접 발급
-  - msToken / s_v_web_id 는 로컬 랜덤 생성으로도 검색 API 통과 (서버 검증 약함)
+전략:
+  1순위 (DOUYIN_USE_REMOTE_SESSION=1): Railway /douyin-session 호출 → Puppeteer 가
+     발급한 진짜 douyin.com 쿠키 (ttwid + s_v_web_id + msToken + odin_tt 등)
+     를 받아 jar 에 주입. Apify residential IP 의 byted_acrawler 평판 부족을
+     Railway IP 평판으로 우회.
+  2순위 (fallback): ttwid.bytedance.com/ttwid/union/register/ POST + 로컬 랜덤.
+     Phase 1.6 패턴 — verify_check soft-block 가능성 있으나 키도 endpoint 도
+     없을 때의 최후 수단.
 
-이로써 우리는 douyin.com HTML 페이지에 절대 접근하지 않고 JSON API 만 직타격 가능.
+douyin.com HTML 페이지는 어느 경로에서도 호출하지 않음 (captcha trap 회피).
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ from typing import Any
 from apify import Actor
 
 from generators import generate_random_ms_token, generate_s_v_web_id
+from session_remote import fetch_remote_session, is_remote_session_enabled
 
 
 CURL_IMPERSONATE = "chrome120"
@@ -155,10 +160,10 @@ async def ensure_ttwid(
     impersonate: str | None = None,
     keyword: str | None = None,  # 호환용 (Phase 1.6 에서는 사용하지 않음)
 ) -> dict:
-    """ttwid bootstrap + 로컬 쿠키 생성. douyin.com HTML 절대 호출 안 함.
+    """세션 쿠키 확보. Remote(Railway) 우선 → fallback ttwid.bytedance.com.
 
     Returns:
-        {cookies, msToken, ttwid, s_v_web_id, impersonate, attempt}
+        {cookies, msToken, ttwid, s_v_web_id, impersonate, attempt, source}
     """
     existing = cookie_dict(client)
     existing_ttwid = (existing.get("ttwid") or "").strip()
@@ -171,8 +176,39 @@ async def ensure_ttwid(
             "s_v_web_id": (existing.get("s_v_web_id") or "").strip(),
             "impersonate": impersonate or "",
             "attempt": 0,
+            "source": "cache",
         }
 
+    # ── 1순위: Railway remote session ──────────────────────────────────
+    if is_remote_session_enabled():
+        actor.log.info("[SESSION] remote=enabled — calling Railway /douyin-session")
+        remote = await fetch_remote_session(client, actor, force=False)
+        if remote.ok:
+            # 받은 쿠키 모두 .douyin.com 도메인으로 jar 에 inject
+            for name, value in remote.cookies.items():
+                if value:
+                    _set_douyin_cookie(client, name, value)
+            jar = cookie_dict(client)
+            actor.log.info(
+                f"[SESSION] source=remote elapsed_ms={remote.elapsed_ms} "
+                f"cache_hit={remote.cache_hit} ttwid_len={len(remote.cookies.get('ttwid') or '')} "
+                f"injected_keys={sorted(remote.cookies.keys())}"
+            )
+            return {
+                "cookies": jar,
+                "msToken": (remote.cookies.get("msToken") or "").strip(),
+                "ttwid": (remote.cookies.get("ttwid") or "").strip(),
+                "s_v_web_id": (remote.cookies.get("s_v_web_id") or "").strip(),
+                "impersonate": impersonate or "",
+                "attempt": 0,
+                "source": "remote",
+            }
+        actor.log.warning(
+            f"[SESSION] remote 실패 — fallback to ttwid.bytedance.com "
+            f"(reason={remote.error!r} elapsed_ms={remote.elapsed_ms})"
+        )
+
+    # ── 2순위: ttwid.bytedance.com fallback ────────────────────────────
     started_at = time.monotonic()
     last_error: Exception | None = None
 
@@ -215,6 +251,7 @@ async def ensure_ttwid(
                 "s_v_web_id": s_v_web_id,
                 "impersonate": imp,
                 "attempt": attempt,
+                "source": "bootstrap",
             }
 
         if attempt < 3:

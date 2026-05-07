@@ -19,6 +19,13 @@ ACTOR_SEARCH_REVISION = "20260507_v1_phase0_mvp"
 # 엔드포인트 추가는 Phase 4 에서 별도 PR 로 진행. 도메인 변경 시 이 한 곳만 수정.
 RAILWAY_BASE_ORIGIN = "https://proxyapify-production-d4c5.up.railway.app"
 
+# Railway /douyin-session endpoint URL (Phase 4 — Puppeteer 기반 ttwid 발급).
+# 환경변수 DOUYIN_SESSION_URL 로 덮어쓰기 가능 (테스트용 별도 호스트).
+_DEFAULT_DOUYIN_SESSION_URL = f"{RAILWAY_BASE_ORIGIN}/douyin-session"
+DOUYIN_SESSION_URL = (
+    os.environ.get("DOUYIN_SESSION_URL") or _DEFAULT_DOUYIN_SESSION_URL
+).strip()
+
 # 프리뷰용 릴레이 베이스(끝이 `?url=`). `DOUYIN_PREVIEW_PROXY_BASE`로 덮어쓰기.
 _DEFAULT_DOUYIN_PREVIEW_PROXY_BASE = f"{RAILWAY_BASE_ORIGIN}/?url="
 PROXY_BASE = (
