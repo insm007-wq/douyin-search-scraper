@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+from typing import Any
 
 from apify import Actor
 from curl_cffi.requests import AsyncSession
@@ -13,6 +14,49 @@ from curl_cffi.requests import AsyncSession
 from constants import _FIXED_UA, ACTOR_SEARCH_REVISION
 from search_http import fetch_douyin_search
 from abogus_signer import preheat_signer
+
+
+# Douyin 은 CN 외 IP 에서 봇 차단이 강함. RESIDENTIAL pool 에서 CN/HK/TW 우선,
+# 차단 시 SG/JP/KR 폴백. 미국·유럽은 봇 페이지(6KB HTML, ttwid 미발급) 자주 받음.
+_PROXY_COUNTRY_ORDER = ["HK", "TW", "SG", "JP", "KR", "CN"]
+
+
+async def _setup_proxy(actor_input: dict) -> tuple[Any, str | None]:
+    """proxyConfiguration 입력을 처리해 (proxy_config, first_proxy_url) 반환."""
+    use_proxy = bool(actor_input.get("useProxy", True))
+    if not use_proxy:
+        Actor.log.info("[proxy] disabled by useProxy=false")
+        return None, None
+
+    user_proxy_cfg = actor_input.get("proxyConfiguration") or {}
+    groups = user_proxy_cfg.get("apifyProxyGroups") or ["RESIDENTIAL"]
+    user_country = (user_proxy_cfg.get("apifyProxyCountry") or "").strip()
+    initial_country = user_country or _PROXY_COUNTRY_ORDER[0]
+
+    kwargs: dict[str, Any] = {"groups": groups}
+    if initial_country:
+        kwargs["country_code"] = initial_country
+    try:
+        proxy_config = await Actor.create_proxy_configuration(**kwargs)
+    except Exception as e:
+        Actor.log.warning(f"[proxy] create_proxy_configuration 실패: {type(e).__name__}: {e}")
+        return None, None
+
+    if proxy_config is None:
+        Actor.log.warning("[proxy] proxy_config is None — useApifyProxy 가 false?")
+        return None, None
+
+    try:
+        proxy_url = await proxy_config.new_url()
+    except Exception as e:
+        Actor.log.warning(f"[proxy] new_url 실패: {type(e).__name__}: {e}")
+        return proxy_config, None
+
+    Actor.log.info(
+        f"[proxy] groups={groups} country={initial_country or 'auto'} "
+        f"url_ok={bool(proxy_url)}"
+    )
+    return proxy_config, proxy_url
 
 
 async def _run() -> None:
@@ -34,10 +78,16 @@ async def _run() -> None:
             f"ms_token_override={'yes' if ms_token_override else 'no'} pid={os.getpid()}"
         )
 
+        # 프록시 설정 — Phase 1 에서도 필수 (Douyin 은 datacenter IP 차단 강함).
+        proxy_config, proxy_url = await _setup_proxy(actor_input)
+
         # a_bogus 서명자 1회 인스턴스화 (콜드 스타트 latency 흡수)
         preheat_signer(_FIXED_UA)
 
         async with AsyncSession() as client:
+            # session.py 가 client._dy_proxy 를 읽어 curl_cffi proxies 옵션에 전달
+            if proxy_url:
+                client._dy_proxy = proxy_url
             data = await fetch_douyin_search(
                 client,
                 keyword=keyword,

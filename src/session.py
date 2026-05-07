@@ -20,8 +20,9 @@ from generators import generate_s_v_web_id
 
 
 CURL_IMPERSONATE = "chrome120"
-SEARCH_IMPERSONATE_FALLBACKS = ("chrome120", "chrome131")
-_SESSION_INIT_IMPERSONATE_ORDER = ("chrome131", "chrome124", "chrome120", "safari17_0")
+# curl-cffi 0.7.4 가 지원하는 프로파일만 사용 — chrome131 은 lib 미지원으로 ImpersonateError 발생.
+SEARCH_IMPERSONATE_FALLBACKS = ("chrome120", "chrome124")
+_SESSION_INIT_IMPERSONATE_ORDER = ("chrome124", "chrome120", "safari17_0")
 
 # Phase 1 검증 규칙: ttwid 만 필수. msToken/odin_tt 는 Phase 3 에서 강화.
 # Douyin 의 ttwid 는 첫 페이지 로드만으로 set-cookie 됨.
@@ -148,10 +149,28 @@ async def ensure_ttwid(
                 )
                 elapsed = time.monotonic() - t0
                 ck_now = cookie_dict(client)
+                # 봇 차단 페이지 감지 — Douyin 의 차단 페이지는 보통 6-8KB HTML, ttwid 미발급
+                # + content-length 작음 + 'verify' 또는 'captcha' 또는 'security' 키워드 포함.
+                body_bytes = r.content or b""
+                bot_signal = ""
+                if len(body_bytes) < 15_000 and not (ck_now.get("ttwid") or "").strip():
+                    txt_low = body_bytes[:4096].decode("utf-8", errors="ignore").lower()
+                    for sig in ("verify", "captcha", "security", "blocked", "robot"):
+                        if sig in txt_low:
+                            bot_signal = f" bot_page_signal={sig!r}"
+                            break
+                    if not bot_signal:
+                        bot_signal = " bot_page_suspect=small_body_no_ttwid"
+                set_cookie_hdr = r.headers.get("set-cookie", "") or ""
+                sc_names = sorted({
+                    p.split("=", 1)[0].strip().lower()
+                    for p in set_cookie_hdr.split(",")
+                    if "=" in p and len(p.split("=", 1)[0].strip()) < 40
+                })
                 actor.log.info(
                     f"[SESSION:step{step_idx}] url={url.split('?')[0]} "
-                    f"status={r.status_code} bytes={len(r.content or b'')} "
-                    f"elapsed={elapsed:.2f}s "
+                    f"status={r.status_code} bytes={len(body_bytes)} "
+                    f"elapsed={elapsed:.2f}s set_cookie_names={sc_names}{bot_signal} "
                     f"jar: ttwid={len((ck_now.get('ttwid') or '').strip())} "
                     f"s_v_web_id={len((ck_now.get('s_v_web_id') or '').strip())} "
                     f"odin_tt={len((ck_now.get('odin_tt') or '').strip())} "
