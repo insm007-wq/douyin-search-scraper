@@ -290,6 +290,30 @@ async def fetch_douyin_search(
         actor.log.warning(
             f"[fetch] non-zero status_code={status_code} status_msg={data.get('status_msg')!r}"
         )
+    # Phase 1.9: status_code=0 + items=0 → soft-block 진단.
+    # search_nil_info 의 search_nil_type 가 'verify_check' 면 IP/세션 신뢰도 부족.
+    # 전체 search_nil_info + qc + extra 를 dump 해서 어떤 신호가 있는지 확인.
+    if status_code == 0 and n_items == 0:
+        nil_info = data.get("search_nil_info") or {}
+        extra = data.get("extra") or {}
+        qc = data.get("qc") or ""
+        polling = data.get("polling_time")
+        guide = data.get("guide_search_words") or []
+        actor.log.warning(
+            f"[fetch:soft_block] search_nil_type={nil_info.get('search_nil_type')!r} "
+            f"search_nil_item={nil_info.get('search_nil_item')!r} "
+            f"is_load_more={nil_info.get('is_load_more')!r} "
+            f"qc={qc!r} polling={polling!r} guide_words_n={len(guide)}"
+        )
+        # 전체 nil_info 본문 (text_ 같은 잘림 필드 노출용)
+        try:
+            actor.log.info(f"[fetch:nil_info_full] {json.dumps(nil_info, ensure_ascii=False)[:600]}")
+        except Exception:
+            pass
+        try:
+            actor.log.info(f"[fetch:extra_full] {json.dumps(extra, ensure_ascii=False)[:300]}")
+        except Exception:
+            pass
     return data
 
 

@@ -16,9 +16,11 @@ from search_http import fetch_douyin_search
 from abogus_signer import preheat_signer
 
 
-# Douyin 은 CN 외 IP 에서 봇 차단이 강함. RESIDENTIAL pool 에서 CN/HK/TW 우선,
-# 차단 시 SG/JP/KR 폴백. 미국·유럽은 봇 페이지(6KB HTML, ttwid 미발급) 자주 받음.
-_PROXY_COUNTRY_ORDER = ["HK", "TW", "SG", "JP", "KR", "CN"]
+# Douyin 은 mainland CN IP 가 가장 통과율 높음. Phase 1.9 — CN 우선 시도.
+# Apify RESIDENTIAL pool 의 CN 비중은 낮지만 일단 CN 시도 → 실패 시 사용자가 country
+# 명시(TW/HK 등) 또는 외부 CN proxy 로 전환.
+# HK 는 byted_acrawler 평판 낮음 (verify_check soft-block 빈발) — 후순위.
+_PROXY_COUNTRY_ORDER = ["TW", "HK", "SG", "JP", "KR", "CN"]
 
 
 async def _setup_proxy(actor_input: dict) -> tuple[Any, str | None]:
